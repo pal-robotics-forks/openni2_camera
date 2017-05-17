@@ -28,7 +28,7 @@
  *
  *      Author: Julius Kammerl (jkammerl@willowgarage.com)
  */
-#include "OpenNI.h"
+#include "OpenNI-2/OpenNI.h"
 
 #include "openni2_camera/openni2_frame_listener.h"
 #include "openni2_camera/openni2_timer_filter.h"
@@ -51,12 +51,13 @@ OpenNI2FrameListener::OpenNI2FrameListener() :
   ros::Time::init();
 }
 
-bool OpenNI2FrameListener::setUseDeviceTimer(bool enable)
+void OpenNI2FrameListener::setUseDeviceTimer(bool enable)
 {
   user_device_timer_ = enable;
 
   if (user_device_timer_)
     timer_filter_->clear();
+
 }
 
 void OpenNI2FrameListener::onNewFrame(openni::VideoStream& stream)

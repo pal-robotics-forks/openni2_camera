@@ -41,7 +41,7 @@
 #include <set>
 #include <string>
 
-#include "OpenNI.h"
+#include "OpenNI-2/OpenNI.h"
 
 namespace openni2_wrapper
 {
@@ -110,14 +110,15 @@ public:
   {
     boost::mutex::scoped_lock l(device_mutex_);
 
-    ROS_INFO("Device \"%s\" connected\n", pInfo->getUri());
-
     const OpenNI2DeviceInfo device_info_wrapped = openni2_convert(pInfo);
+
+    ROS_INFO("Device \"%s\" found.", pInfo->getUri());
 
     // make sure it does not exist in set before inserting
     device_set_.erase(device_info_wrapped);
     device_set_.insert(device_info_wrapped);
   }
+
 
   virtual void onDeviceDisconnected(const openni::DeviceInfo* pInfo)
   {
@@ -214,6 +215,34 @@ std::size_t OpenNI2DeviceManager::getNumOfConnectedDevices() const
   return device_listener_->getNumOfConnectedDevices();
 }
 
+std::string OpenNI2DeviceManager::getSerial(const std::string& Uri) const
+{
+  openni::Device openni_device;
+  std::string ret;
+
+  // we need to open the device to query the serial number
+  if (Uri.length() > 0 && openni_device.open(Uri.c_str()) == openni::STATUS_OK)
+  {
+    int serial_len = 100;
+    char serial[serial_len];
+
+    openni::Status rc = openni_device.getProperty(openni::DEVICE_PROPERTY_SERIAL_NUMBER, serial, &serial_len);
+    if (rc == openni::STATUS_OK)
+      ret = serial;
+    else
+    {
+      THROW_OPENNI_EXCEPTION("Serial number query failed: %s", openni::OpenNI::getExtendedError());
+    }
+    // close the device again
+    openni_device.close();
+  }
+  else
+  {
+    THROW_OPENNI_EXCEPTION("Device open failed: %s", openni::OpenNI::getExtendedError());
+  }
+  return ret;
+}
+
 boost::shared_ptr<OpenNI2Device> OpenNI2DeviceManager::getAnyDevice()
 {
   return boost::make_shared<OpenNI2Device>("");
@@ -239,6 +268,8 @@ std::ostream& operator << (std::ostream& stream, const OpenNI2DeviceManager& dev
                                      ", Product ID: " << it->product_id_ <<
                                       ")" << std::endl;
   }
+
+  return stream;
 }
 
 

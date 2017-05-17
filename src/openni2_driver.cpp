@@ -32,14 +32,25 @@
 #include "openni2_camera/openni2_driver.h"
 #include "openni2_camera/openni2_exception.h"
 
+// PAL headers
+#include <pal_vision_msgs/Gesture.h>
+#include <pal_detection_msgs/PersonDetections.h>
+
+// ROS headers
+#include <ros/package.h>
+#include <std_msgs/Int16.h>
 #include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/distortion_models.h>
+#include <tf/transform_datatypes.h>
+#include <tf/transform_broadcaster.h>
 
+// Boost headers
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/thread/thread.hpp>
+#include <boost/filesystem.hpp>
 
 namespace openni2_wrapper
-{
+{ 
 
 OpenNI2Driver::OpenNI2Driver(ros::NodeHandle& n, ros::NodeHandle& pnh) :
     nh_(n),
@@ -52,8 +63,22 @@ OpenNI2Driver::OpenNI2Driver(ros::NodeHandle& n, ros::NodeHandle& pnh) :
     ir_subscribers_(false),
     color_subscribers_(false),
     depth_subscribers_(false),
-    depth_raw_subscribers_(false)
+    depth_raw_subscribers_(false),
+    gestures_subscribers_(false),
+    num_users_subscribers_(false),
+    user_map_subscribers_(false),
+    user_tracker_image_transport_(nh_),
+    next_available_color_id_(0)
 {
+
+  std::string cwd = boost::filesystem::current_path().string();
+  std::string ini_file_path = ros::package::getPath("openni2_camera") + "/etc/NiTE.ini";
+  std::string target_ini_file = cwd + "/NiTE.ini";
+  if (!boost::filesystem::exists(target_ini_file))
+  {
+    ROS_WARN_STREAM("Making symlink from " << ini_file_path << " to " << target_ini_file << " This is required by NiTE2");
+    boost::filesystem::create_symlink(ini_file_path, cwd + "/NiTE.ini");
+  }
 
   genVideoModeTableMap();
 
@@ -68,12 +93,13 @@ OpenNI2Driver::OpenNI2Driver(ros::NodeHandle& n, ros::NodeHandle& pnh) :
   while (!config_init_)
   {
     ROS_DEBUG("Waiting for dynamic reconfigure configuration.");
-    boost::this_thread::sleep(boost::posix_time::seconds(0.1));
+    boost::this_thread::sleep(boost::posix_time::milliseconds(100));
   }
   ROS_DEBUG("Dynamic reconfigure configuration received.");
 
-  advertiseROSTopics();
+  initializeUserColors();
 
+  advertiseROSTopics(); 
 }
 
 void OpenNI2Driver::advertiseROSTopics()
@@ -119,6 +145,31 @@ void OpenNI2Driver::advertiseROSTopics()
     pub_depth_ = depth_raw_it.advertiseCamera("image", 1, itssc, itssc, rssc, rssc);
   }
 
+  if ( device_->hasHandTracker() )
+  {
+    ros::SubscriberStatusCallback rssc = boost::bind(&OpenNI2Driver::handTrackerConnectCb, this);
+    pub_gestures_ = nh_.advertise<pal_vision_msgs::Gesture>("gestures", 1, rssc, rssc);
+  }
+
+  if ( device_->hasUserTracker() )
+  {
+    ros::SubscriberStatusCallback rssc = boost::bind(&OpenNI2Driver::userTrackerConnectCb, this);
+    pub_users_ = nh_.advertise<pal_detection_msgs::PersonDetections>("users", 1, rssc, rssc);
+    image_transport::SubscriberStatusCallback itssc = boost::bind(&OpenNI2Driver::userTrackerConnectCb, this);
+    pub_user_map_ = user_tracker_image_transport_.advertise("user_map", 1, itssc, itssc);
+
+    geometry_msgs::TransformStamped cameraPose;
+    //request camera pose to see if it is available in TF
+    publish_camera_pose_ = getCameraPose(cameraPose);
+    if ( !publish_camera_pose_ )
+      ROS_INFO("The camera pose won't be published as it is not in TF");
+
+    device_->setUserTrackerFrameCallback(boost::bind(&OpenNI2Driver::newUserTrackerFrameCallback, this, _1, _2));
+
+    ROS_INFO("Starting user tracker.");
+    device_->startUserTracker();
+  }
+
   ////////// CAMERA INFO MANAGER
 
   // Pixel offset between depth and IR images.
@@ -139,6 +190,13 @@ void OpenNI2Driver::advertiseROSTopics()
   color_info_manager_ = boost::make_shared<camera_info_manager::CameraInfoManager>(color_nh, color_name, color_info_url_);
   ir_info_manager_  = boost::make_shared<camera_info_manager::CameraInfoManager>(ir_nh,  ir_name,  ir_info_url_);
 
+  get_serial_server = nh_.advertiseService("get_serial", &OpenNI2Driver::getSerialCb,this);
+
+}
+
+bool OpenNI2Driver::getSerialCb(openni2_camera::GetSerialRequest& req, openni2_camera::GetSerialResponse& res) {
+  res.serial = device_manager_->getSerial(device_->getUri());
+  return true;
 }
 
 void OpenNI2Driver::configCb(Config &config, uint32_t level)
@@ -183,6 +241,7 @@ void OpenNI2Driver::configCb(Config &config, uint32_t level)
 
   auto_exposure_ = config.auto_exposure;
   auto_white_balance_ = config.auto_white_balance;
+  exposure_ = config.exposure;
 
   use_device_time_ = config.use_device_time;
 
@@ -293,6 +352,16 @@ void OpenNI2Driver::applyConfigToOpenNIDevice()
     ROS_ERROR("Could not set auto white balance. Reason: %s", exception.what());
   }
 
+  try
+  {
+    if (!config_init_ || (old_config_.exposure != exposure_))
+      device_->setExposure(exposure_);
+  }
+  catch (const OpenNI2Exception& exception)
+  {
+    ROS_ERROR("Could not set exposure. Reason: %s", exception.what());
+  }
+
   device_->setUseDeviceTimer(use_device_time_);
 
 }
@@ -336,8 +405,19 @@ void OpenNI2Driver::colorConnectCb()
   }
 }
 
-void OpenNI2Driver::depthConnectCb()
+std::string getGestureName( nite::GestureType type )
 {
+  if ( type == nite::GESTURE_WAVE )
+    return "Wave";
+
+  if ( type == nite::GESTURE_CLICK )
+    return "Click";
+
+  return "unknown";
+}
+
+void OpenNI2Driver::depthConnectCb()
+{  
   boost::lock_guard<boost::mutex> lock(connect_mutex_);
 
   depth_subscribers_ = pub_depth_.getNumSubscribers() > 0;
@@ -385,6 +465,36 @@ void OpenNI2Driver::irConnectCb()
     ROS_INFO("Stopping IR stream.");
     device_->stopIRStream();
   }
+}
+
+void OpenNI2Driver::handTrackerConnectCb()
+{
+  boost::lock_guard<boost::mutex> lock(connect_mutex_);
+
+  gestures_subscribers_ = pub_gestures_.getNumSubscribers() > 0;
+
+  bool need_hand_tracker = gestures_subscribers_;
+
+  if (need_hand_tracker && !device_->isHandTrackerStarted())
+  {
+    device_->setHandTrackerFrameCallback(boost::bind(&OpenNI2Driver::newHandTrackerFrameCallback, this, _1));
+
+    ROS_INFO("Starting hand tracker.");
+    device_->startHandTracker();
+  }
+  else if (!need_hand_tracker && device_->isHandTrackerStarted())
+  {
+    ROS_INFO("Stopping hand tracker.");
+    device_->stopHandTracker();
+  }
+}
+
+void OpenNI2Driver::userTrackerConnectCb()
+{
+  boost::lock_guard<boost::mutex> lock(connect_mutex_);
+
+  num_users_subscribers_ = pub_users_.getNumSubscribers() > 0;
+  user_map_subscribers_  = pub_user_map_.getNumSubscribers() > 0;
 }
 
 void OpenNI2Driver::newIRFrameCallback(sensor_msgs::ImagePtr image)
@@ -472,6 +582,352 @@ void OpenNI2Driver::newDepthFrameCallback(sensor_msgs::ImagePtr image)
   }
 }
 
+void OpenNI2Driver::newHandTrackerFrameCallback(nite::HandTrackerFrameRef handTrackerFrame)
+{
+  const nite::Array<nite::GestureData>& gestures = handTrackerFrame.getGestures();
+  ros::Time now = ros::Time::now();
+  for (int i = 0; i < gestures.getSize(); ++i)
+  {
+    if ( gestures[i].isComplete() )
+    {
+      pal_vision_msgs::Gesture msg;
+      msg.header.stamp = now;
+      msg.header.frame_id = depth_frame_id_;
+      msg.gestureId = getGestureName(gestures[i].getType());
+      msg.position3D.x   = gestures[i].getCurrentPosition().x / 1000;
+      msg.position3D.y   = gestures[i].getCurrentPosition().y / 1000;
+      msg.position3D.z   = gestures[i].getCurrentPosition().z / 1000;
+
+      ROS_INFO_STREAM("Gesture: " << msg.gestureId <<
+                      " at point (" << msg.position3D.x << ", " <<
+                      msg.position3D.y << ", " << msg.position3D.z << ")");
+
+      pub_gestures_.publish(msg);
+    }
+  }
+}
+
+bool OpenNI2Driver::getCameraPose(geometry_msgs::TransformStamped& cameraPose)
+{  
+  //Get the camera frame pose wrt /base_link
+  std::string referenceFrame = "/base_link";
+  double timeOutMs = 1000;
+  std::string errMsg;
+  if ( !tf_listener_.waitForTransform(referenceFrame, color_frame_id_,
+                                  ros::Time(0),                    //get the most up to date transformation
+                                  ros::Duration(timeOutMs/1000.0), //time out
+                                  ros::Duration(0.01),             //checking rate
+                                  &errMsg) )                       //error message in case of failure
+  {
+    ROS_ERROR_STREAM("Unable to get TF transform from " << color_frame_id_ << " to " <<
+                     referenceFrame << ": " << errMsg);
+    return false;
+  }
+
+  try
+  {
+    tf::StampedTransform tfCameraPose;
+    tf_listener_.lookupTransform( referenceFrame, color_frame_id_,   //get transform from ... to ...
+                                  ros::Time(0),                      //get latest available
+                                  tfCameraPose);
+
+    tf::transformStampedTFToMsg(tfCameraPose, cameraPose);
+  }
+  catch ( const tf::TransformException& e)
+  {
+    ROS_ERROR_STREAM("Error in lookUpTransform from " << color_frame_id_ << " to " <<
+                     referenceFrame);
+    return false;
+  }
+
+  return true;
+}
+
+void OpenNI2Driver::publishUsers(nite::UserTrackerFrameRef userTrackerFrame)
+{
+  pal_detection_msgs::PersonDetections detectionsMsg;
+
+  if ( publish_camera_pose_ )
+    getCameraPose(detectionsMsg.camera_pose);
+
+  detectionsMsg.header.stamp = ros::Time::now();
+
+  const nite::Array<nite::UserData>& users = userTrackerFrame.getUsers();
+  for (int i = 0; i < users.getSize(); ++i)
+  {
+    const nite::UserData& user = users[i];
+    if ( user.getSkeleton().getState() == nite::SKELETON_TRACKED &&
+         user.isVisible() && !user.isLost() )
+    {
+      pal_detection_msgs::PersonDetection detectionMsg;
+
+
+      std::cout << "Bounding box  min = (" << user.getBoundingBox().min.x << ", " << user.getBoundingBox().min.y << ", " << user.getBoundingBox().min.z << ")" <<
+                   " max = (" << user.getBoundingBox().max.x << ", " << user.getBoundingBox().max.y << ", " << user.getBoundingBox().max.z << ")" << std::endl;
+      int depthX = user.getBoundingBox().min.x + (user.getBoundingBox().max.x - user.getBoundingBox().min.x)/2;
+      int depthY = user.getBoundingBox().min.y + (user.getBoundingBox().max.y - user.getBoundingBox().min.y)/2;
+      float worldX;
+      float worldY;
+      float worldZ;
+
+      openni::DepthPixel *depth_pixel = (openni::DepthPixel *)userTrackerFrame.getDepthFrame().getData();
+      openni::DepthPixel pixel = depth_pixel[depthY * userTrackerFrame.getDepthFrame().getVideoMode().getResolutionX() + depthX];
+
+      openni::CoordinateConverter::convertDepthToWorld(*(device_->getDepthVideoStream()),
+                                                       depthX,
+                                                       depthY,
+                                                       pixel,
+                                                       &worldX,
+                                                       &worldY,
+                                                       &worldZ);
+
+      detectionMsg.position3D.header.frame_id = depth_frame_id_;
+      detectionMsg.position3D.point.x = user.getCenterOfMass().x/1000.0; //from mm to m
+      detectionMsg.position3D.point.y = user.getCenterOfMass().y/1000.0;
+      detectionMsg.position3D.point.z = user.getCenterOfMass().z/1000.0;
+
+      std::cout << "User position from depth image:        " << worldX/1000 << ", " << worldY/1000 << ", " << worldZ/1000 << " m " << std::endl;
+      std::cout << "user position provided by UserTracker: " << detectionMsg.position3D.point.x << ", " << detectionMsg.position3D.point.y << ", " << detectionMsg.position3D.point.z << " m" << std::endl;
+      std::cout << std::endl;
+      std::stringstream ss;
+      ss << user.getId();
+      detectionMsg.face.name = ss.str();
+
+      detectionsMsg.persons.push_back(detectionMsg);
+    }    
+  }
+
+  if ( !detectionsMsg.persons.empty() )
+    pub_users_.publish(detectionsMsg);
+}
+
+void OpenNI2Driver::drawSkeletonLink(nite::UserTracker& userTracker,
+                                     const nite::SkeletonJoint& joint1,
+                                     const nite::SkeletonJoint& joint2,
+                                     cv::Mat& img)
+{
+  if ( joint1.getPositionConfidence() >= 0.5 &&
+       joint2.getPositionConfidence() >= 0.5 )
+  {
+    float coordinates[6] = {0};
+    userTracker.convertJointCoordinatesToDepth(joint1.getPosition().x,
+                                               joint1.getPosition().y,
+                                               joint1.getPosition().z,
+                                               &coordinates[0], &coordinates[1]);
+
+    userTracker.convertJointCoordinatesToDepth(joint2.getPosition().x,
+                                               joint2.getPosition().y,
+                                               joint2.getPosition().z,
+                                               &coordinates[3], &coordinates[4]);
+
+    cv::line(img,
+             cv::Point(coordinates[0], coordinates[1]),
+             cv::Point(coordinates[3], coordinates[4]),
+             cv::Scalar(255,255,255), 2);
+  }
+}
+
+void OpenNI2Driver::drawSkeleton(nite::UserTracker& userTracker,
+                                 const nite::UserData& user,
+                                 cv::Mat& img)
+{
+  drawSkeletonLink(userTracker,
+                   user.getSkeleton().getJoint(nite::JOINT_HEAD),
+                   user.getSkeleton().getJoint(nite::JOINT_NECK), img);
+
+  drawSkeletonLink(userTracker,
+                   user.getSkeleton().getJoint(nite::JOINT_LEFT_SHOULDER),
+                   user.getSkeleton().getJoint(nite::JOINT_LEFT_ELBOW), img);
+
+  drawSkeletonLink(userTracker,
+                   user.getSkeleton().getJoint(nite::JOINT_LEFT_ELBOW),
+                   user.getSkeleton().getJoint(nite::JOINT_LEFT_HAND), img);
+
+  drawSkeletonLink(userTracker,
+                   user.getSkeleton().getJoint(nite::JOINT_RIGHT_SHOULDER),
+                   user.getSkeleton().getJoint(nite::JOINT_RIGHT_ELBOW), img);
+
+  drawSkeletonLink(userTracker,
+                   user.getSkeleton().getJoint(nite::JOINT_RIGHT_ELBOW),
+                   user.getSkeleton().getJoint(nite::JOINT_RIGHT_HAND), img);
+
+  drawSkeletonLink(userTracker,
+                   user.getSkeleton().getJoint(nite::JOINT_LEFT_SHOULDER),
+                   user.getSkeleton().getJoint(nite::JOINT_RIGHT_SHOULDER), img);
+
+  drawSkeletonLink(userTracker,
+                   user.getSkeleton().getJoint(nite::JOINT_LEFT_SHOULDER),
+                   user.getSkeleton().getJoint(nite::JOINT_TORSO), img);
+
+  drawSkeletonLink(userTracker,
+                   user.getSkeleton().getJoint(nite::JOINT_RIGHT_SHOULDER),
+                   user.getSkeleton().getJoint(nite::JOINT_TORSO), img);
+
+  drawSkeletonLink(userTracker,
+                   user.getSkeleton().getJoint(nite::JOINT_TORSO),
+                   user.getSkeleton().getJoint(nite::JOINT_LEFT_HIP), img);
+
+  drawSkeletonLink(userTracker,
+                   user.getSkeleton().getJoint(nite::JOINT_TORSO),
+                   user.getSkeleton().getJoint(nite::JOINT_RIGHT_HIP), img);
+
+  drawSkeletonLink(userTracker,
+                   user.getSkeleton().getJoint(nite::JOINT_LEFT_HIP),
+                   user.getSkeleton().getJoint(nite::JOINT_RIGHT_HIP), img);
+
+  drawSkeletonLink(userTracker,
+                   user.getSkeleton().getJoint(nite::JOINT_LEFT_HIP),
+                   user.getSkeleton().getJoint(nite::JOINT_LEFT_KNEE), img);
+
+  drawSkeletonLink(userTracker,
+                   user.getSkeleton().getJoint(nite::JOINT_LEFT_KNEE),
+                   user.getSkeleton().getJoint(nite::JOINT_LEFT_FOOT), img);
+
+  drawSkeletonLink(userTracker,
+                   user.getSkeleton().getJoint(nite::JOINT_RIGHT_HIP),
+                   user.getSkeleton().getJoint(nite::JOINT_RIGHT_KNEE), img);
+
+  drawSkeletonLink(userTracker,
+                   user.getSkeleton().getJoint(nite::JOINT_RIGHT_KNEE),
+                   user.getSkeleton().getJoint(nite::JOINT_RIGHT_FOOT), img);
+}
+
+void OpenNI2Driver::publishUserMap(nite::UserTrackerFrameRef userTrackerFrame,
+                                   nite::UserTracker& userTracker)
+{
+  nite::UserMap userMap = userTrackerFrame.getUserMap();
+  cv::Mat cvUserMap(userMap.getHeight(), userMap.getWidth(),
+                    CV_16UC1, reinterpret_cast<void*>(const_cast<nite::UserId*>(userMap.getPixels())),
+                    userMap.getStride());
+
+  cv::Mat userImage = cv::Mat::zeros(userMap.getHeight(), userMap.getWidth(), CV_8UC3);
+
+  const nite::Array<nite::UserData>& users = userTrackerFrame.getUsers();
+  for (int i = 0; i < users.getSize(); ++i)
+  {
+    const nite::UserData& user = users[i];
+    nite::UserId nId = user.getId();
+
+    if ( user.getSkeleton().getState() == nite::SKELETON_TRACKED &&
+         user.isVisible() && !user.isLost() )
+    {      
+      cv::Mat userMask = (cvUserMap == nId);
+      if ( user_id_color_.find(nId) == user_id_color_.end() )
+      {
+        user_id_color_[nId] = user_colors_available_[next_available_color_id_];
+        ++next_available_color_id_;
+        if ( next_available_color_id_ == user_colors_available_.size() )
+          next_available_color_id_ = 0;
+      }
+      //paint user mask in the image
+      userImage.setTo(user_id_color_[nId], userMask);
+
+      drawSkeleton(userTracker, user, userImage);
+    }
+  }
+
+  cv_image_.encoding = sensor_msgs::image_encodings::BGR8;
+  cv_image_.image = userImage;
+  sensor_msgs::Image img_msg;
+  img_msg.header.stamp = ros::Time::now();
+  cv_image_.toImageMsg(img_msg);
+  pub_user_map_.publish(img_msg);
+}
+
+void publishTransform(const nite::UserData& user, nite::JointType const& joint_name, const std::string& frame_id,
+                      const std::string& child_frame_id) {
+    static tf::TransformBroadcaster br;
+    const nite::SkeletonJoint joint = user.getSkeleton().getJoint(joint_name);
+    const nite::Point3f joint_position = joint.getPosition();
+    const nite::Quaternion joint_orientation = joint.getOrientation();
+
+    double x = -joint_position.x / 1000.0;
+    double y = joint_position.y / 1000.0;
+    double z = joint_position.z / 1000.0;
+
+    tf::Transform transform;
+    transform.setOrigin(tf::Vector3(x, y, z));
+
+    transform.setRotation(tf::Quaternion(joint_orientation.x, joint_orientation.y,
+                                         joint_orientation.z, joint_orientation.w));
+    if (isnan(transform.getRotation().x()) || isnan(transform.getRotation().y()) ||
+        isnan(transform.getRotation().z()) || isnan(transform.getRotation().w()))
+    {
+      ROS_WARN_STREAM_ONCE_NAMED(std::string("publishTransform ") + child_frame_id, "Got nan on frame " << child_frame_id <<
+                          " orientation. Publishing it with identity frame. Will only publish this message once per joint");
+      transform.setRotation(tf::Quaternion::getIdentity());
+    }
+
+    tf::Transform change_frame;
+    change_frame.setOrigin(tf::Vector3(0, 0, 0));
+    tf::Quaternion frame_rotation;
+    frame_rotation.setEulerZYX(1.5708, 0, 1.5708);
+    change_frame.setRotation(frame_rotation);
+
+    transform = change_frame * transform;
+    br.sendTransform(tf::StampedTransform(transform, ros::Time::now(), frame_id, child_frame_id));
+}
+
+void publishTransforms(nite::UserTrackerFrameRef userTracker, const std::string& frame_id) {
+  for (int i = 0; i < userTracker.getUsers().getSize(); ++i)
+  {
+    const nite::UserData& user = userTracker.getUsers()[i];
+    if (user.getSkeleton().getState() != nite::SKELETON_TRACKED)
+      continue;
+
+        publishTransform(user, nite::JOINT_HEAD,           frame_id, "head");
+        publishTransform(user, nite::JOINT_NECK,           frame_id, "neck");
+        publishTransform(user, nite::JOINT_TORSO,          frame_id, "torso");
+
+        publishTransform(user, nite::JOINT_LEFT_SHOULDER,  frame_id, "left_shoulder");
+        publishTransform(user, nite::JOINT_LEFT_ELBOW,     frame_id, "left_elbow");
+        publishTransform(user, nite::JOINT_LEFT_HAND,      frame_id, "left_hand");
+
+        publishTransform(user, nite::JOINT_RIGHT_SHOULDER, frame_id, "right_shoulder");
+        publishTransform(user, nite::JOINT_RIGHT_ELBOW,    frame_id, "right_elbow");
+        publishTransform(user, nite::JOINT_RIGHT_HAND,     frame_id, "right_hand");
+
+        publishTransform(user, nite::JOINT_LEFT_HIP,       frame_id, "left_hip");
+        publishTransform(user, nite::JOINT_LEFT_KNEE,      frame_id, "left_knee");
+        publishTransform(user, nite::JOINT_LEFT_FOOT,      frame_id, "left_foot");
+
+        publishTransform(user, nite::JOINT_RIGHT_HIP,      frame_id, "right_hip");
+        publishTransform(user, nite::JOINT_RIGHT_KNEE,     frame_id, "right_knee");
+        publishTransform(user, nite::JOINT_RIGHT_FOOT,     frame_id, "right_foot");
+    }
+}
+
+void OpenNI2Driver::newUserTrackerFrameCallback(nite::UserTrackerFrameRef userTrackerFrame,
+                                                nite::UserTracker& userTracker)
+{
+  const nite::Array<nite::UserData>& users = userTrackerFrame.getUsers();
+  for (int i = 0; i < users.getSize(); ++i)
+  {
+    const nite::UserData& user = users[i];
+
+    //try to start tracking the skeleton of new users
+    if (user.isNew())
+    {
+      userTracker.startSkeletonTracking(user.getId());
+    }
+  }
+
+  if (num_users_subscribers_)
+  {
+    //publish num of users
+    publishUsers(userTrackerFrame);
+  }
+
+  if (user_map_subscribers_)
+  {
+    //publisher user's segmentation map
+    publishUserMap(userTrackerFrame,
+                   userTracker);
+  }
+
+  publishTransforms(userTrackerFrame, "/camera_link");
+}
+
 // Methods to get calibration parameters for the various cameras
 sensor_msgs::CameraInfoPtr OpenNI2Driver::getDefaultCameraInfo(int width, int height, double f) const
 {
@@ -515,7 +971,7 @@ sensor_msgs::CameraInfoPtr OpenNI2Driver::getColorCameraInfo(int width, int heig
   if (color_info_manager_->isCalibrated())
   {
     info = boost::make_shared<sensor_msgs::CameraInfo>(color_info_manager_->getCameraInfo());
-    if ( info->width != width )
+    if ( static_cast<int>(info->width) != width )
     {
       // Use uncalibrated values
       ROS_WARN_ONCE("Image resolution doesn't match calibration of the RGB camera. Using default parameters.");
@@ -543,7 +999,7 @@ sensor_msgs::CameraInfoPtr OpenNI2Driver::getIRCameraInfo(int width, int height,
   if (ir_info_manager_->isCalibrated())
   {
     info = boost::make_shared<sensor_msgs::CameraInfo>(ir_info_manager_->getCameraInfo());
-    if ( info->width != width )
+    if ( static_cast<int>(info->width) != width )
     {
       // Use uncalibrated values
       ROS_WARN_ONCE("Image resolution doesn't match calibration of the IR camera. Using default parameters.");
@@ -605,18 +1061,19 @@ void OpenNI2Driver::readConfigFromParameterServer()
 
 std::string OpenNI2Driver::resolveDeviceURI(const std::string& device_id) throw(OpenNI2Exception)
 {
-  std::string device_URI;
-  boost::shared_ptr<std::vector<std::string> > available_device_URIs = 
+  // retrieve available device URIs, they look like this: "1d27/0601@1/5"
+  // which is <vendor ID>/<product ID>@<bus number>/<device number>
+  boost::shared_ptr<std::vector<std::string> > available_device_URIs =
     device_manager_->getConnectedDeviceURIs();
 
   // look for '#<number>' format
-  if (device_id_.size() > 1 && device_id_[0] == '#')
+  if (device_id.size() > 1 && device_id[0] == '#')
   {
-    std::istringstream device_number_str(device_id_.substr(1));
+    std::istringstream device_number_str(device_id.substr(1));
     int device_number;
     device_number_str >> device_number;
     int device_index = device_number - 1; // #1 refers to first device
-    if (device_index >= available_device_URIs->size() || device_index < 0)
+    if (device_index >= static_cast<int>(available_device_URIs->size()) || device_index < 0)
     {
       THROW_OPENNI_EXCEPTION(
           "Invalid device number %i, there are %zu devices connected.",
@@ -631,30 +1088,30 @@ std::string OpenNI2Driver::resolveDeviceURI(const std::string& device_id) throw(
   //   <bus>    is usb bus id, typically start at 1
   //   <number> is the device number, for consistency with openni_camera, these start at 1
   //               although 0 specifies "any device on this bus"
-  else if (device_id_.size() > 1 && device_id_.find('@') != std::string::npos)
+  else if (device_id.size() > 1 && device_id.find('@') != std::string::npos && device_id.find('/') == std::string::npos)
   {
     // get index of @ character
-    size_t index = device_id_.find('@');
+    size_t index = device_id.find('@');
     if (index <= 0)
     {
       THROW_OPENNI_EXCEPTION(
         "%s is not a valid device URI, you must give the bus number before the @.",
-        device_id_.c_str());
+        device_id.c_str());
     }
-    if (index >= device_id_.size() - 1)
+    if (index >= device_id.size() - 1)
     {
       THROW_OPENNI_EXCEPTION(
-        "%s is not a valid device URI, you must give a number after the @, specify 0 for first device",
-        device_id_.c_str());
+        "%s is not a valid device URI, you must give the device number after the @, specify 0 for any device on this bus",
+        device_id.c_str());
     }
 
     // pull out device number on bus
-    std::istringstream device_number_str(device_id_.substr(index+1));
+    std::istringstream device_number_str(device_id.substr(index+1));
     int device_number;
     device_number_str >> device_number;
 
     // reorder to @<bus>
-    std::string bus = device_id_.substr(0, index);
+    std::string bus = device_id.substr(0, index);
     bus.insert(0, "@");
 
     for (size_t i = 0; i < available_device_URIs->size(); ++i)
@@ -663,19 +1120,59 @@ std::string OpenNI2Driver::resolveDeviceURI(const std::string& device_id) throw(
       if (s.find(bus) != std::string::npos)
       {
         // this matches our bus, check device number
-        --device_number;
-        if (device_number <= 0)
+        std::ostringstream ss;
+        ss << bus << '/' << device_number;
+        if (device_number == 0 || s.find(ss.str()) != std::string::npos)
           return s;
       }
     }
 
-    THROW_OPENNI_EXCEPTION("Device not found %s", device_id_.c_str());
+    THROW_OPENNI_EXCEPTION("Device not found %s", device_id.c_str());
   }
-  // everything else is treated as device_URI directly
   else
   {
-    return device_id_;
+    // check if the device id given matches a serial number of a connected device
+    for(std::vector<std::string>::const_iterator it = available_device_URIs->begin();
+        it != available_device_URIs->end(); ++it)
+    {
+      try {
+        std::string serial = device_manager_->getSerial(*it);
+        if (serial.size() > 0 && device_id == serial)
+          return *it;
+      }
+      catch (const OpenNI2Exception& exception)
+      {
+        ROS_WARN("Could not query serial number of device \"%s\":", exception.what());
+      }
+    }
+
+    // everything else is treated as part of the device_URI
+    bool match_found = false;
+    std::string matched_uri;
+    for (size_t i = 0; i < available_device_URIs->size(); ++i)
+    {
+      std::string s = (*available_device_URIs)[i];
+      if (s.find(device_id) != std::string::npos)
+      {
+        if (!match_found)
+        {
+          matched_uri = s;
+          match_found = true;
+        }
+        else
+        {
+          // more than one match
+          THROW_OPENNI_EXCEPTION("Two devices match the given device id '%s': %s and %s.", device_id.c_str(), matched_uri.c_str(), s.c_str());
+        }
+      }
+    }
+    if (match_found)
+      return matched_uri;
+    else
+      return "INVALID";
   }
+
+  return "";
 }
 
 void OpenNI2Driver::initDevice()
@@ -706,7 +1203,7 @@ void OpenNI2Driver::initDevice()
   while (ros::ok() && !device_->isValid())
   {
     ROS_DEBUG("Waiting for device initialization..");
-    boost::this_thread::sleep(boost::posix_time::seconds(0.1));
+    boost::this_thread::sleep(boost::posix_time::milliseconds(100));
   }
 
 }
@@ -868,6 +1365,20 @@ sensor_msgs::ImageConstPtr OpenNI2Driver::rawToFloatingPointConversion(sensor_ms
   }
 
   return new_image;
+}
+
+void OpenNI2Driver::initializeUserColors()
+{
+  user_colors_available_.clear();
+  user_colors_available_.push_back( cv::Scalar(255,0,0) );
+  user_colors_available_.push_back( cv::Scalar(0,255,0) );
+  user_colors_available_.push_back( cv::Scalar(0,0,255) );
+  user_colors_available_.push_back( cv::Scalar(255,255,0) );
+  user_colors_available_.push_back( cv::Scalar(255,0,255) );
+  user_colors_available_.push_back( cv::Scalar(0,255,255) );
+  user_colors_available_.push_back( cv::Scalar(128,128,128) );
+
+  next_available_color_id_ = 0;
 }
 
 }

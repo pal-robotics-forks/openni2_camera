@@ -38,7 +38,7 @@
 
 #include <vector>
 
-#include "OpenNI.h"
+#include "OpenNI-2/OpenNI.h"
 
 namespace openni2_wrapper
 {
@@ -60,7 +60,7 @@ public:
     callback_ = callback;
   }
 
-  bool setUseDeviceTimer(bool enable);
+  void setUseDeviceTimer(bool enable);
 
 private:
   openni::VideoFrameRef m_frame;

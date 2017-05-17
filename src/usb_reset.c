@@ -1,5 +1,7 @@
+/* usbreset -- send a USB port reset to a USB device */
+
 /*
- * Copyright (c) 2013, Willow Garage, Inc.
+ * Copyright (c) 2014, JSK Robotics Lab, Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -26,24 +28,44 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  *
- *      Author: Julius Kammerl (jkammerl@willowgarage.com)
+ *      Author: Ryohei Ueda (ueda@jsk.t.u-tokyo.ac.jp)
  */
 
-#include "openni2_camera/openni2_device_info.h"
+#include <stdio.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/ioctl.h>
 
-namespace openni2_wrapper
+#include <linux/usbdevice_fs.h>
+
+
+int main(int argc, char **argv)
 {
+  const char *filename;
+  int fd;
+  int rc;
 
+  if (argc != 2) {
+    fprintf(stderr, "Usage: usbreset device-filename\n");
+    return 1;
+  }
+  filename = argv[1];
 
-std::ostream& operator << (std::ostream& stream, const OpenNI2DeviceInfo& device_info) {
-  stream << "Uri: " << device_info.uri_ << " (Vendor: " << device_info.vendor_ <<
-                                           ", Name: " << device_info.name_ <<
-                                           ", Vendor ID: " << std::hex << device_info.vendor_id_ <<
-                                           ", Product ID: " << std::hex << device_info.product_id_ <<
-                                             ")" << std::endl;
-  return stream;
+  fd = open(filename, O_WRONLY);
+  if (fd < 0) {
+    perror("Error opening output file");
+    return 1;
+  }
+
+  printf("Resetting USB device %s\n", filename);
+  rc = ioctl(fd, USBDEVFS_RESET, 0);
+  if (rc < 0) {
+    perror("Error in ioctl");
+    return 1;
+  }
+  printf("Reset successful\n");
+
+  close(fd);
+  return 0;
 }
-
-
-
-} //namespace openni2_wrapper

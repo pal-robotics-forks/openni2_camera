@@ -40,17 +40,37 @@
 #include <sensor_msgs/Image.h>
 
 #include <dynamic_reconfigure/server.h>
+#include "openni2_camera/openni2_device_manager.h"
+#include "openni2_camera/openni2_device.h"
+#include "openni2_camera/openni2_video_mode.h"
 #include <openni2_camera/OpenNI2Config.h>
 
+// NiTE 2 headers
+#include "NiTE-2/NiTE.h"
+
+// ROS headers
+#include <ros/ros.h>
+#include <image_transport/image_transport.h>
+#include <cv_bridge/cv_bridge.h>
+#include <dynamic_reconfigure/server.h>
 #include <image_transport/image_transport.h>
 #include <camera_info_manager/camera_info_manager.h>
+#include <sensor_msgs/Image.h>
+#include <tf/transform_listener.h>
 
+// Std C++ headers
 #include <string>
 #include <vector>
+#include <map>
 
 #include "openni2_camera/openni2_device_manager.h"
 #include "openni2_camera/openni2_device.h"
 #include "openni2_camera/openni2_video_mode.h"
+#include "openni2_camera/GetSerial.h"
+
+// OpenCV headers
+#include <opencv2/core/core.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
 
 #include <ros/ros.h>
 
@@ -69,6 +89,9 @@ private:
   void newIRFrameCallback(sensor_msgs::ImagePtr image);
   void newColorFrameCallback(sensor_msgs::ImagePtr image);
   void newDepthFrameCallback(sensor_msgs::ImagePtr image);
+  void newHandTrackerFrameCallback(nite::HandTrackerFrameRef handTrackerFrame);
+  void newUserTrackerFrameCallback(nite::UserTrackerFrameRef userTrackerFrame,
+                                   nite::UserTracker& userTracker);
 
   // Methods to get calibration parameters for the various cameras
   sensor_msgs::CameraInfoPtr getDefaultCameraInfo(int width, int height, double f) const;
@@ -87,6 +110,10 @@ private:
   void colorConnectCb();
   void depthConnectCb();
   void irConnectCb();
+  void handTrackerConnectCb();
+  void userTrackerConnectCb();
+
+  bool getSerialCb(openni2_camera::GetSerialRequest& req, openni2_camera::GetSerialResponse& res);
 
   void configCb(Config &config, uint32_t level);
 
@@ -101,6 +128,20 @@ private:
   void setColorVideoMode(const OpenNI2VideoMode& color_video_mode);
   void setDepthVideoMode(const OpenNI2VideoMode& depth_video_mode);
 
+  //user tracking
+  void initializeUserColors();
+  void drawSkeletonLink(nite::UserTracker& userTracker,
+                        const nite::SkeletonJoint& joint1,
+                        const nite::SkeletonJoint& joint2,
+                        cv::Mat& img);
+  void drawSkeleton(nite::UserTracker& userTracker,
+                    const nite::UserData& user,
+                    cv::Mat& img);
+  void publishUsers(nite::UserTrackerFrameRef userTrackerFrame);
+  void publishUserMap(nite::UserTrackerFrameRef userTrackerFrame,
+                      nite::UserTracker& userTracker);
+  bool getCameraPose(geometry_msgs::TransformStamped& cameraPose);
+
   ros::NodeHandle& nh_;
   ros::NodeHandle& pnh_;
 
@@ -108,6 +149,9 @@ private:
   boost::shared_ptr<OpenNI2Device> device_;
 
   std::string device_id_;
+
+  /** \brief get_serial server*/
+  ros::ServiceServer get_serial_server;
 
   /** \brief reconfigure server*/
   boost::shared_ptr<ReconfigureServer> reconfigure_server_;
@@ -157,15 +201,33 @@ private:
 
   bool auto_exposure_;
   bool auto_white_balance_;
+  int exposure_;
 
   bool ir_subscribers_;
   bool color_subscribers_;
   bool depth_subscribers_;
   bool depth_raw_subscribers_;
+  bool gestures_subscribers_;
+  bool num_users_subscribers_;
+  bool user_map_subscribers_;
 
   bool use_device_time_;
 
   Config old_config_;
+
+  //NiTE hand tracking and gesture recognition  
+  ros::Publisher pub_gestures_;
+
+  //NiTE user tracker
+  ros::Publisher pub_users_;
+  image_transport::ImageTransport user_tracker_image_transport_;
+  cv_bridge::CvImage cv_image_;
+  image_transport::Publisher pub_user_map_;
+  std::vector<cv::Scalar> user_colors_available_;
+  std::map<nite::UserId, cv::Scalar> user_id_color_; //what color is used to paint each tracker user
+  int next_available_color_id_;
+  tf::TransformListener tf_listener_;
+  bool publish_camera_pose_;
 };
 
 }

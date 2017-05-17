@@ -1,9 +1,24 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(openni2_camera)
 
-find_package(catkin REQUIRED camera_info_manager dynamic_reconfigure image_transport  nodelet sensor_msgs roscpp message_generation)
+find_package(catkin REQUIRED COMPONENTS camera_info_manager
+                                        dynamic_reconfigure
+                                        image_transport
+                                        nodelet
+                                        sensor_msgs
+                                        roscpp
+                                        pal_vision_msgs                                        
+										message_generation
+                                        cv_bridge
+                                        tf)
 
 find_package(Boost REQUIRED COMPONENTS system thread)
+
+
+set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${PROJECT_SOURCE_DIR}")
+
+add_definitions(-D__linux__)
+
 
 find_package(PkgConfig)
 
@@ -11,6 +26,8 @@ pkg_check_modules(PC_OPENNI2 libopenni2)
 if (NOT PC_OPENNI2_FOUND)
   pkg_check_modules(PC_OPENNI2 REQUIRED openni2)
 endif()
+
+find_package(NiTE2 REQUIRED)
 
 generate_dynamic_reconfigure_options(cfg/OpenNI2.cfg)
 add_service_files(FILES
@@ -20,7 +37,7 @@ generate_messages()
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES openni2_wrapper
-  CATKIN_DEPENDS camera_info_manager dynamic_reconfigure image_transport nodelet sensor_msgs roscpp message_runtime
+  CATKIN_DEPENDS camera_info_manager dynamic_reconfigure image_transport nodelet sensor_msgs roscpp message_runtime pal_vision_msgs cv_bridge tf
   DEPENDS libopenni2
 )
 
@@ -28,6 +45,7 @@ include_directories(include
                     ${catkin_INCLUDE_DIRS} 
                     ${Boost_INCLUDE_DIRS}
                     ${PC_OPENNI2_INCLUDE_DIRS}
+                    ${NITE2_INCLUDE_DIRS}
                     )
 
 link_directories(${PC_OPENNI2_LIBRARY_DIRS})
@@ -38,14 +56,17 @@ add_library(openni2_wrapper
    src/openni2_device_info.cpp 
    src/openni2_timer_filter.cpp 
    src/openni2_frame_listener.cpp
+   src/nite2_hand_tracker_frame_listener.cpp
+   src/nite2_user_tracker_frame_listener.cpp
    src/openni2_device_manager.cpp
    src/openni2_exception.cpp
    src/openni2_video_mode.cpp
 )
-target_link_libraries(openni2_wrapper ${catkin_LIBRARIES} ${PC_OPENNI2_LIBRARIES} ${Boost_LIBRARIES} )
+target_link_libraries(openni2_wrapper ${catkin_LIBRARIES} ${PC_OPENNI2_LIBRARIES} ${Boost_LIBRARIES} 
+                                                      ${NITE2_LIBRARIES})
 
 add_executable(test_wrapper test/test_wrapper.cpp )
-target_link_libraries(test_wrapper openni2_wrapper ${Boost_LIBRARIES})
+target_link_libraries(test_wrapper openni2_wrapper ${Boost_LIBRARIES} ${NITE2_LIBRARIES})
 
 add_library(openni2_driver_lib
    src/openni2_driver.cpp
@@ -90,5 +111,7 @@ install(FILES openni2_nodelets.xml
         DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
 
-
+install(FILES etc/NiTE.ini
+        DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/etc
+)
 

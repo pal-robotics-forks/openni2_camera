@@ -861,7 +861,7 @@ void publishTransform(const nite::UserData& user, nite::JointType const& joint_n
     tf::Transform change_frame;
     change_frame.setOrigin(tf::Vector3(0, 0, 0));
     tf::Quaternion frame_rotation;
-    frame_rotation.setEulerZYX(1.5708, 0, 1.5708);
+    frame_rotation.setEulerZYX(M_PI, 0, 0.);
     change_frame.setRotation(frame_rotation);
 
     transform = change_frame * transform;
@@ -925,7 +925,7 @@ void OpenNI2Driver::newUserTrackerFrameCallback(nite::UserTrackerFrameRef userTr
                    userTracker);
   }
 
-  publishTransforms(userTrackerFrame, "/camera_link");
+  publishTransforms(userTrackerFrame, depth_frame_id_);
 }
 
 // Methods to get calibration parameters for the various cameras

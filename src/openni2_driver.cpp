@@ -123,7 +123,7 @@ void OpenNI2Driver::advertiseROSTopics()
   boost::lock_guard<boost::mutex> lock(connect_mutex_);
 
   // Asus Xtion PRO does not have an RGB camera
-  if (device_->hasColorSensor())
+  if (device_->hasColorSensor() && rgb_processing_)
   {
     image_transport::SubscriberStatusCallback itssc = boost::bind(&OpenNI2Driver::colorConnectCb, this);
     ros::SubscriberStatusCallback rssc = boost::bind(&OpenNI2Driver::colorConnectCb, this);
@@ -971,7 +971,7 @@ sensor_msgs::CameraInfoPtr OpenNI2Driver::getColorCameraInfo(int width, int heig
   if (color_info_manager_->isCalibrated())
   {
     info = boost::make_shared<sensor_msgs::CameraInfo>(color_info_manager_->getCameraInfo());
-    if ( static_cast<int>(info->width) != width )
+    if ( static_cast<int>(info->width) != width && rgb_processing_)
     {
       // Use uncalibrated values
       ROS_WARN_ONCE("Image resolution doesn't match calibration of the RGB camera. Using default parameters.");
@@ -1044,6 +1044,10 @@ void OpenNI2Driver::readConfigFromParameterServer()
     ROS_WARN ("~device_id is not set! Using first device.");
     device_id_ = "#1";
   }
+
+  // Parameter that enables/disables the RGB image acquisition and processing
+  // For example, Orbbec Astra Pro needs this parameter to be false
+  pnh_.param("rgb_processing", rgb_processing_, true);
 
   // Camera TF frames
   pnh_.param("ir_frame_id", ir_frame_id_, std::string("/openni_ir_optical_frame"));

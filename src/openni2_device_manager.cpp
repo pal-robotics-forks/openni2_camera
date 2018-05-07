@@ -215,6 +215,36 @@ std::size_t OpenNI2DeviceManager::getNumOfConnectedDevices() const
   return device_listener_->getNumOfConnectedDevices();
 }
 
+std::string OpenNI2DeviceManager::getFirmwareVersion(const std::string& Uri) const
+{
+  openni::Device openni_device;
+  std::string ret;
+
+  // we need to open the device to query the serial number
+  if (Uri.length() > 0 && openni_device.open(Uri.c_str()) == openni::STATUS_OK)
+  {
+    int fw_ver_len = 100;
+    char fw_version[fw_ver_len];
+
+    openni::Status rc = openni_device.getProperty(openni::DEVICE_PROPERTY_FIRMWARE_VERSION, fw_version, &fw_ver_len);
+    if (rc == openni::STATUS_OK)
+    {
+      ret = fw_version;
+    } 
+    else
+    {
+      THROW_OPENNI_EXCEPTION("Firwmare version query failed: %s", openni::OpenNI::getExtendedError());
+    }
+    // close the device again
+    openni_device.close();
+  }
+  else
+  {
+    THROW_OPENNI_EXCEPTION("Device open failed: %s", openni::OpenNI::getExtendedError());
+  }
+  return ret;
+}
+
 std::string OpenNI2DeviceManager::getSerial(const std::string& Uri) const
 {
   openni::Device openni_device;

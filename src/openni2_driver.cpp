@@ -166,8 +166,9 @@ void OpenNI2Driver::advertiseROSTopics()
 
     device_->setUserTrackerFrameCallback(boost::bind(&OpenNI2Driver::newUserTrackerFrameCallback, this, _1, _2));
 
-    ROS_INFO("Starting user tracker.");
+    ROS_INFO("Starting user tracker...");
     device_->startUserTracker();
+    ROS_INFO("User tracker started");   
   }
 
   ////////// CAMERA INFO MANAGER
@@ -1187,6 +1188,8 @@ void OpenNI2Driver::initDevice()
     {
       std::string device_URI = resolveDeviceURI(device_id_);
       device_ = device_manager_->getDevice(device_URI);
+      ROS_INFO_STREAM("Serial number   : " << device_manager_->getSerial(device_URI));
+      ROS_INFO_STREAM("Firmware version: " << device_manager_->getFirmwareVersion(device_URI));
     }
     catch (const OpenNI2Exception& exception)
     {

@@ -62,6 +62,7 @@ public:
   boost::shared_ptr<OpenNI2Device> getDevice(const std::string& device_URI);
 
   std::string getSerial(const std::string& device_URI) const;
+  std::string getFirmwareVersion(const std::string& Uri) const;
 
 protected:
   boost::shared_ptr<OpenNI2DeviceListener> device_listener_;

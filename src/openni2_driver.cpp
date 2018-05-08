@@ -167,8 +167,16 @@ void OpenNI2Driver::advertiseROSTopics()
     device_->setUserTrackerFrameCallback(boost::bind(&OpenNI2Driver::newUserTrackerFrameCallback, this, _1, _2));
 
     ROS_INFO("Starting user tracker...");
-    device_->startUserTracker();
-    ROS_INFO("User tracker started");   
+    if ( !device_->startUserTracker() )
+    {
+        ROS_ERROR("User tracker could not be started");
+        pub_users_.shutdown();
+        pub_user_map_.shutdown();
+    }
+    else
+    {
+        ROS_INFO("User tracker started");
+    }
   }
 
   ////////// CAMERA INFO MANAGER

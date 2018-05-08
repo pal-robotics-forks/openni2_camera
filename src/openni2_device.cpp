@@ -855,10 +855,14 @@ boost::shared_ptr<nite::HandTracker> OpenNI2Device::getHandTracker() const throw
 boost::shared_ptr<nite::UserTracker> OpenNI2Device::getUserTracker() const throw (OpenNI2Exception)
 {
   if ( !has_nite_ )
+  {
+    std::cout << "\tOpenNI2Device::getUserTracker: no NITE detected" << std::endl;
     THROW_OPENNI_EXCEPTION("Not creating user tracking because NiTE2 could not be initialized");
+  }
 
   if ( openni_device_.get() == NULL )
   {
+    std::cout << "\tOpenNI2Device::getUserTracker: device not opened" << std::endl;
     THROW_OPENNI_EXCEPTION("Not creating user tracking because device has not been initialized");
   }
 
@@ -868,10 +872,13 @@ boost::shared_ptr<nite::UserTracker> OpenNI2Device::getUserTracker() const throw
   {
     stream->setMirroringEnabled(false);
   }
+  else
+      std::cout << "\tOpenNI2Device::getUserTracker: no stream" << std::endl;
   user_tracker_ = boost::make_shared<nite::UserTracker>();
   nite::Status niteRc = user_tracker_->create(openni_device_.get());
   if (niteRc != nite::STATUS_OK)
   {
+    std::cout << "\tOpenNI2Device::getUserTracker: could not create user tracker (error code: " << niteRc << ")" << std::endl;
     THROW_OPENNI_EXCEPTION("Couldn't create user tracker");
   }
 

@@ -2,8 +2,8 @@
 Changelog for package openni2_camera
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+0.3.0 (2018-05-22)
+------------------
 * Merge pull request `#11 <https://github.com/pal-robotics-forks/openni2_camera/issues/11>`_ from uts-magic-lab/improve_tf_skeletons
   Improve the TF of the skeletons
 * Merge pull request `#10 <https://github.com/pal-robotics-forks/openni2_camera/issues/10>`_ from pal-robotics-forks/create-user-tracker-only-when-no-failing

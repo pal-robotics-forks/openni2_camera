@@ -107,7 +107,7 @@ public:
   void startColorStream();
   void startDepthStream();
   void startHandTracker();
-  void startUserTracker();
+  bool startUserTracker();
 
   void stopAllStreams();
 

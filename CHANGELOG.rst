@@ -2,6 +2,11 @@
 Changelog for package openni2_camera
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* Remove unnecessary include path
+* Contributors: Victor Lopez
+
 0.3.1 (2019-10-01)
 ------------------
 * Fix deprecated pluginlib call

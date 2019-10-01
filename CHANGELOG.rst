@@ -2,8 +2,8 @@
 Changelog for package openni2_camera
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+0.3.3 (2019-10-01)
+------------------
 * Add pal-nite dependency
 * Contributors: Victor Lopez
 

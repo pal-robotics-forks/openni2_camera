@@ -2,8 +2,8 @@
 Changelog for package openni2_camera
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+0.3.1 (2019-10-01)
+------------------
 * Fix deprecated pluginlib call
 * Contributors: Victor Lopez
 

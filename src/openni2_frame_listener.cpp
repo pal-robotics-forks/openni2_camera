@@ -28,7 +28,7 @@
  *
  *      Author: Julius Kammerl (jkammerl@willowgarage.com)
  */
-#include "OpenNI-2/OpenNI.h"
+#include "OpenNI.h"
 
 #include "openni2_camera/openni2_frame_listener.h"
 #include "openni2_camera/openni2_timer_filter.h"

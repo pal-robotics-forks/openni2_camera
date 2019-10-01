@@ -29,7 +29,7 @@
  *      Author: Julius Kammerl (jkammerl@willowgarage.com)
  */
 
-#include "OpenNI-2/OpenNI.h"
+#include "OpenNI.h"
 #include "NiTE-2/NiTE.h"
 
 #include <boost/lexical_cast.hpp>
